@@ -10,13 +10,10 @@ from PyPDF2 import PdfReader
 st.set_page_config(page_title="Agente Fiscal Pro", page_icon="🤖", layout="wide")
 
 # Lógica de Segurança para API KEY
-# 1. Tenta pegar dos Segredos do Streamlit (Quando estiver na Nuvem)
 if "OPENAI_API_KEY" in st.secrets:
     os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-# 2. Se não achar (estiver rodando local), usa a chave abaixo
-# ATENÇÃO: Se for subir este arquivo no GitHub, APAGUE SUA CHAVE DAQUI antes.
 else:
-    os.environ["OPENAI_API_KEY"] = "SUA_CHAVE_AQUI"
+    os.environ["OPENAI_API_KEY"] = "SUA_CHAVE_AQUI" # <--- Se rodar local, coloque sua chave aqui
 
 MODELO_LLM = "gpt-4o-mini"
 
@@ -33,11 +30,11 @@ def ler_pdf(uploaded_file):
         return f"Erro ao ler PDF: {e}"
 
 def criar_agentes():
-    """Cria os agentes. Definimos aqui para recriar a cada execução e não misturar contextos."""
+    """Cria os agentes."""
     extrator = Agent(
         role='Analista Fiscal',
-        goal='Extrair dados chave de notas fiscais.',
-        backstory='Especialista em identificar CNPJ, Datas e Valores em documentos financeiros.',
+        goal='Extrair dados complexos de notas fiscais de serviço (NFS-e).',
+        backstory='Especialista em identificar Tomadores, Prestadores, Retenções de Impostos e Códigos Tributários.',
         verbose=False,
         allow_delegation=False,
         llm=MODELO_LLM
@@ -46,7 +43,7 @@ def criar_agentes():
     auditor = Agent(
         role='Engenheiro de Dados',
         goal='Padronizar os dados em JSON.',
-        backstory='Você garante que a saída seja apenas um JSON válido, sem texto adicional.',
+        backstory='Você garante que a saída seja apenas um JSON válido, convertendo valores monetários para float (ponto).',
         verbose=False,
         allow_delegation=False,
         llm=MODELO_LLM
@@ -54,22 +51,21 @@ def criar_agentes():
     return extrator, auditor
 
 # --- 3. INTERFACE ---
-st.title("🤖 Extrator de Notas Fiscais em Lote")
-st.markdown("### Arraste múltiplos arquivos e gere um relatório único.")
+st.title("🤖 Extrator de Notas Fiscais (NFS-e)")
+st.markdown("### Extração detalhada: Tomador, Impostos e Valores Líquidos.")
 
 with st.sidebar:
     st.header("Painel de Controle")
     st.info(f"Modelo Ativo: {MODELO_LLM}")
-    st.write("Dica: Arraste 3 ou 4 notas de uma vez para testar.")
+    st.write("Dica: Funciona melhor com Notas de Serviço (NFS-e).")
 
-# Upload que aceita múltiplos arquivos
 arquivos_upload = st.file_uploader(
-    "Solte seus arquivos PDF aqui (pode selecionar vários)", 
+    "Solte seus arquivos PDF aqui", 
     type="pdf", 
     accept_multiple_files=True
 )
 
-# --- 4. LÓGICA DE PROCESSAMENTO EM LOTE ---
+# --- 4. LÓGICA DE PROCESSAMENTO ---
 if arquivos_upload:
     st.write(f"📂 **{len(arquivos_upload)} arquivos identificados.**")
     
@@ -79,27 +75,55 @@ if arquivos_upload:
         barra_progresso = st.progress(0)
         status_text = st.empty()
         
-        # Início do Loop
         for i, arquivo in enumerate(arquivos_upload):
-            # Atualiza barra de progresso
             porcentagem = (i + 1) / len(arquivos_upload)
             barra_progresso.progress(porcentagem)
-            status_text.text(f"Processando arquivo {i+1} de {len(arquivos_upload)}: {arquivo.name}...")
+            status_text.text(f"Lendo nota {i+1} de {len(arquivos_upload)}: {arquivo.name}...")
             
-            # 1. Ler o PDF atual
             texto_nota = ler_pdf(arquivo)
             
-            # 2. Configurar Agentes e Tarefas para ESTE arquivo
             extrator, auditor = criar_agentes()
             
+            # --- ONDE A MÁGICA ACONTECE (ALTERAÇÃO 1: O Pedido) ---
             task_extract = Task(
-                description=f"Extraia dados desta nota fiscal:\n\n{texto_nota}\n\nCampos: Emissor, CNPJ, Data, Valor Total, NCM do primeiro item, ICMS ST, Nome do tomador do serviço, Código de tributação nacional, Valor do serviço, valor líquido da nota fiscal, retenção de Issqn.",
-                expected_output="Lista de dados.",
+                description=f"""
+                Analise o texto desta Nota Fiscal de Serviço e extraia:
+                
+                Texto da Nota:
+                ---
+                {texto_nota}
+                ---
+                
+                CAMPOS OBRIGATÓRIOS PARA EXTRAIR:
+                1. Nome do Prestador (Emissor)
+                2. Nome do Tomador do Serviço (Cliente)
+                3. Número da Nota
+                4. Data de Emissão
+                5. Código de Tributação Nacional (ou Código do Serviço / CNAE)
+                6. Valor do Serviço (Valor Bruto)
+                7. Valor Líquido da Nota (Valor a pagar)
+                8. Valor da Retenção de ISSQN (Se não houver, zero)
+                
+                """,
+                expected_output="Lista com os dados encontrados.",
                 agent=extrator
             )
             
+            # --- (ALTERAÇÃO 2: A Estrutura JSON) ---
             task_json = Task(
-                description="Formate a extração anterior apenas como JSON: {emissor, cnpj, data, valor_total, ncm, icms_st}",
+                description="""
+                Formate os dados extraídos APENAS como JSON válido. Use estas chaves exatas:
+                {
+                    "prestador": "string",
+                    "tomador": "string",
+                    "numero_nota": "string",
+                    "data_emissao": "string",
+                    "codigo_tributacao": "string",
+                    "valor_servico": float,
+                    "valor_liquido": float,
+                    "retencao_issqn": float
+                }
+                """,
                 expected_output="JSON válido.",
                 agent=auditor
             )
@@ -110,44 +134,48 @@ if arquivos_upload:
                 process=Process.sequential
             )
             
-            # 3. Rodar a IA
             try:
                 resultado = crew.kickoff()
-                
-                # Limpeza básica do JSON
                 json_str = str(resultado).replace("```json", "").replace("```", "").strip()
                 dados = json.loads(json_str)
-                
-                # Adicionar o nome do arquivo para saber de qual nota veio
                 dados['arquivo_origem'] = arquivo.name
-                
-                # Salvar na lista geral
                 resultados_finais.append(dados)
                 
             except Exception as e:
                 st.error(f"Erro ao processar {arquivo.name}: {e}")
         
-        # Fim do Loop
         barra_progresso.empty()
         status_text.success("✅ Processamento concluído!")
         
-        # --- 5. EXIBIÇÃO E DOWNLOAD ---
+        # --- (ALTERAÇÃO 3: As Colunas do Excel) ---
         if resultados_finais:
             df = pd.DataFrame(resultados_finais)
             
-            # Reordenar colunas
-            colunas_preferidas = ['arquivo_origem', 'emissor', 'cnpj', 'data', 'valor_total', 'icms_st', 'ncm']
-            colunas_finais = [c for c in colunas_preferidas if c in df.columns]
-            df = df[colunas_finais]
+            # Definindo a ordem das colunas no Excel
+            colunas_ordenadas = [
+                'arquivo_origem', 
+                'numero_nota', 
+                'data_emissao', 
+                'prestador', 
+                'tomador', 
+                'valor_servico', 
+                'valor_liquido', 
+                'retencao_issqn', 
+                'codigo_tributacao'
+            ]
+            
+            # Filtra apenas colunas que realmente vieram (para evitar erro se faltar alguma)
+            cols_finais = [c for c in colunas_ordenadas if c in df.columns]
+            df = df[cols_finais]
 
             st.dataframe(df)
 
             csv = df.to_csv(index=False).encode('utf-8')
             
             st.download_button(
-                label="📥 Baixar Planilha Consolidada (CSV)",
+                label="📥 Baixar Planilha Detalhada (CSV)",
                 data=csv,
-                file_name="relatorio_fiscal_consolidado.csv",
+                file_name="relatorio_fiscal_detalhado.csv",
                 mime="text/csv",
                 type="primary"
             )
