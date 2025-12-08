@@ -1,0 +1,6 @@
+streamlit
+pandas
+crewai
+crewai-tools
+langchain-openai
+pypdf2
