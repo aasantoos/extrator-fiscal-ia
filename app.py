@@ -99,7 +99,7 @@ if arquivos_upload:
             )
             
             task_json = Task(
-                description="Formate a extração anterior apenas como JSON: {emissor, cnpj, data, valor_total, ncm, icms_st}",
+                description="Formate a extração anterior apenas como JSON: {emissor, cnpj, data, valor_total, ncm, icms_st, Nome do tomador do serviço, Código de tributação nacional, Valor do serviço, valor líquido da nota fiscal, retenção de Issqn }",
                 expected_output="JSON válido.",
                 agent=auditor
             )
