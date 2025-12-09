@@ -5,3 +5,4 @@ crewai-tools
 langchain-openai
 pypdf2
 plotly
+openpyxl
