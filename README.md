@@ -44,7 +44,7 @@ Não é apenas um OCR (leitor de texto). É um **Sistema Agêntico** que:
 
 ## 📸 Screenshots
 
-![Dashboard Preview](https://via.placeholder.com/800x400?text=Dashboard+Interativo+Streamlit+Agente+Fiscal)
+![Dashboard Preview]([https://via.placeholder.com/800x400?text=Dashboard+Interativo+Streamlit+Agente+Fiscal](https://raw.githubusercontent.com/aasantoos/extrator-fiscal-ia/refs/heads/main/assets/dashboard_print.png))
 
 ---
 
