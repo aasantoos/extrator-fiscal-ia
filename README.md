@@ -99,6 +99,7 @@ gerar_pdfs_falsos.py: Gera dezenas de PDFs de notas fiscais realistas (usando a 
 gerador_cliente.py: Gera uma planilha Excel com milhares de linhas simuladas para testar dashboards de alta performance no Power BI.
 
 📂 Estrutura do Projeto
+
 Agente-Fiscal-IA/
 │
 ├── app.py                 # Código principal (Frontend Streamlit + Agentes CrewAI)
@@ -106,7 +107,9 @@ Agente-Fiscal-IA/
 ├── gerador_cliente.py     # Script para gerar dados tabulares falsos (Teste de Carga)
 ├── gerar_pdfs_falsos.py   # Script para gerar PDFs realistas para teste de extração
 └── README.md              # Documentação
+
 🚀 Roadmap (Próximos Passos)
+
 [x] Extração de Múltiplos Arquivos
 
 [x] Dashboard Automático Dinâmico
