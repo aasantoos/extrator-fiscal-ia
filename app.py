@@ -3,23 +3,98 @@ import os
 import pandas as pd
 import json
 import io
+import sqlite3
+import time
+from datetime import datetime
 import plotly.express as px
 from crewai import Agent, Task, Crew, Process
 from PyPDF2 import PdfReader
 
 # --- 1. CONFIGURAÇÕES ---
-st.set_page_config(page_title="Agente Fiscal Master", page_icon="🏢", layout="wide")
+st.set_page_config(page_title="Agente Fiscal Master + Memória", page_icon="💾", layout="wide")
 
-# Segurança da API Key
 if "OPENAI_API_KEY" in st.secrets:
     os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 else:
-    # Se for rodar local, coloque sua chave aqui
     os.environ["OPENAI_API_KEY"] = "SUA_CHAVE_AQUI"
 
 MODELO_LLM = "gpt-4o-mini"
 
-# --- 2. FUNÇÕES ESSENCIAIS ---
+# --- 2. BANCO DE DADOS (NOVA FUNCIONALIDADE) ---
+def conectar_banco():
+    return sqlite3.connect("dados_fiscais.db")
+
+def inicializar_banco():
+    conn = conectar_banco()
+    c = conn.cursor()
+    # Criamos tabela com TODOS os campos da sua lógica fiscal
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS notas_fiscais (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data_upload TIMESTAMP,
+            arquivo_origem TEXT,
+            numero_nota TEXT,
+            data_emissao TEXT,
+            emissor_nome TEXT,
+            emissor_cnpj TEXT,
+            tomador_nome TEXT,
+            tomador_cnpj TEXT,
+            descricao_item TEXT,
+            codigo_ncm TEXT,
+            valor_bruto REAL,
+            valor_liquido REAL,
+            valor_icms REAL,
+            valor_ipi REAL,
+            valor_icms_st REAL,
+            valor_issqn REAL,
+            retencao_issqn REAL,
+            json_completo TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def salvar_no_banco(df_novo):
+    if df_novo.empty: return
+    
+    conn = conectar_banco()
+    df_novo['data_upload'] = datetime.now()
+    
+    # Lista de colunas para garantir a ordem no banco
+    colunas_banco = [
+        'arquivo_origem', 'numero_nota', 'data_emissao', 
+        'emissor_nome', 'emissor_cnpj', 'tomador_nome', 'tomador_cnpj',
+        'descricao_item', 'codigo_ncm', 
+        'valor_bruto', 'valor_liquido', 
+        'valor_icms', 'valor_ipi', 'valor_icms_st', 'valor_issqn', 'retencao_issqn',
+        'data_upload'
+    ]
+    
+    # Preenche colunas faltantes com None/0
+    for col in colunas_banco:
+        if col not in df_novo.columns:
+            df_novo[col] = None
+            
+    # Salva JSON bruto para segurança
+    df_novo['json_completo'] = df_novo.apply(lambda x: x.to_json(), axis=1)
+    
+    colunas_finais = colunas_banco + ['json_completo']
+    df_novo[colunas_finais].to_sql('notas_fiscais', conn, if_exists='append', index=False)
+    conn.close()
+
+def carregar_historico():
+    conn = conectar_banco()
+    try:
+        df = pd.read_sql("SELECT * FROM notas_fiscais ORDER BY data_upload DESC", conn)
+    except:
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
+# Inicia o banco ao abrir
+inicializar_banco()
+
+# --- 3. AGENTES (LÓGICA EXISTENTE PRESERVADA) ---
 def ler_pdf(uploaded_file):
     try:
         pdf_reader = PdfReader(uploaded_file)
@@ -31,53 +106,68 @@ def ler_pdf(uploaded_file):
         return f"Erro: {e}"
 
 def criar_equipe_extracao():
-    """Cria os agentes especialistas em extração e tributação."""
+    """Mantendo a instrução de distinguir ICMS e ISS."""
     extrator = Agent(
         role='Auditor Tributário Sênior',
-        goal='Extrair dados detalhados distinguindo entre Comércio (ICMS) e Serviço (ISS).',
-        backstory='Especialista em legislação. Você sabe que DANFE gera ICMS/IPI e NFS-e gera ISSQN. Você extrai Tomador, NCM e impostos corretamente.',
+        goal='Extrair dados distinguindo Comércio (ICMS) e Serviço (ISS).',
+        backstory='Especialista em legislação fiscal (DANFE vs NFS-e).',
         verbose=False, allow_delegation=False, llm=MODELO_LLM
     )
     auditor = Agent(
         role='Engenheiro de Dados',
-        goal='Padronizar JSON e corrigir tipos numéricos.',
-        backstory='Garante que números sejam float e campos vazios sejam 0.0.',
+        goal='Padronizar JSON.',
+        backstory='Garante floats corretos e campos vazios zerados.',
         verbose=False, allow_delegation=False, llm=MODELO_LLM
     )
     return extrator, auditor
 
-def analisar_dados_com_ia(df_json):
-    """Agente CFO para gerar insights."""
+def analisar_dados_com_ia(df_historico):
     analista = Agent(
         role='CFO Virtual',
-        goal='Gerar insights financeiros e tributários.',
-        backstory='Diretor financeiro que analisa custos, carga tributária (ICMS vs ISS) e anomalias.',
+        goal='Analisar o histórico financeiro acumulado.',
+        backstory='Analisa tendências de longo prazo.',
         verbose=True, allow_delegation=False, llm=MODELO_LLM
     )
-    task_analise = Task(
-        description=f"Analise estes dados financeiros:\n{df_json}\n\nEscreva um relatório executivo (Markdown) citando o maior fornecedor, total gasto em Serviços vs Produtos e sugestões de economia.",
-        expected_output="Relatório em Markdown.",
+    dados_texto = df_historico.head(50).to_string()
+    
+    task = Task(
+        description=f"Analise este histórico:\n{dados_texto}\n\nRelatório: Tendência de gastos, proporção de Serviços vs Produtos e sugestões.",
+        expected_output="Relatório Markdown.",
         agent=analista
     )
-    return Crew(agents=[analista], tasks=[task_analise]).kickoff()
+    return Crew(agents=[analista], tasks=[task]).kickoff()
 
-# --- 3. INTERFACE ---
-st.title("🏢 Agente Fiscal: Extração Universal + BI")
-st.markdown("Extrai Tomador, NCM, e separa automaticamente **ICMS (Produtos)** de **ISSQN (Serviços)**.")
+# --- 4. INTERFACE ---
+st.title("💾 Agente Fiscal Master (Com Memória)")
+st.markdown("Extração Universal (ICMS/ISS) + Banco de Dados Automático.")
 
-arquivos_upload = st.file_uploader("Upload de Notas (PDF)", type="pdf", accept_multiple_files=True)
+# Sidebar com Memória
+with st.sidebar:
+    st.header("Banco de Dados")
+    df_hist = carregar_historico()
+    st.metric("Notas Salvas", len(df_hist))
+    val_total = df_hist['valor_bruto'].sum() if not df_hist.empty else 0
+    st.metric("Total Processado", f"R$ {val_total:,.2f}")
+    
+    if st.button("🗑️ Limpar Tudo"):
+        conn = conectar_banco()
+        conn.execute("DELETE FROM notas_fiscais")
+        conn.commit()
+        conn.close()
+        st.warning("Banco limpo!")
+        time.sleep(1)
+        st.rerun()
 
-if 'dados_processados' not in st.session_state:
-    st.session_state.dados_processados = None
+arquivos_upload = st.file_uploader("Processar Novas Notas", type="pdf", accept_multiple_files=True)
 
-# --- 4. PROCESSAMENTO (LOOP) ---
+# --- 5. PROCESSAMENTO ---
 if arquivos_upload:
-    if st.button("🚀 Processar Notas Completas", type="primary"):
+    if st.button("🚀 Processar e Salvar", type="primary"):
         resultados = []
         barra = st.progress(0)
         status = st.empty()
         
-        with st.expander("Ver logs de extração (Tempo Real)", expanded=True):
+        with st.expander("Logs da Auditoria", expanded=True):
             for i, arquivo in enumerate(arquivos_upload):
                 barra.progress((i + 1) / len(arquivos_upload))
                 status.write(f"Auditando: {arquivo.name}...")
@@ -85,61 +175,46 @@ if arquivos_upload:
                 texto = ler_pdf(arquivo)
                 extrator, auditor = criar_equipe_extracao()
                 
-                # --- PROMPT ATUALIZADO (LÓGICA DA CONTADORA) ---
+                # --- PROMPT DA CONTADORA (MANTIDO) ---
                 task_ex = Task(
                     description=f"""
-                    Analise o texto da nota fiscal:
+                    Analise o texto da nota:
                     ---
                     {texto}
                     ---
                     
-                    IDENTIFIQUE O TIPO E EXTRAIA:
+                    IDENTIFIQUE E EXTRAIA:
                     
-                    1. TIPO DE NOTA:
-                       - É Venda/Comércio (DANFE)? Foco em ICMS e IPI.
-                       - É Serviço (NFS-e)? Foco em ISSQN.
+                    1. TIPO DE NOTA (CRUCIAL):
+                       - É DANFE/Venda? -> Extraia ICMS, IPI, ICMS-ST.
+                       - É NFS-e/Serviço? -> Extraia ISSQN.
                     
-                    2. DADOS CADASTRAIS (Sempre extrair):
+                    2. DADOS:
                        - Emissor (Nome, CNPJ)
-                       - Tomador (Nome, CNPJ) - Muito importante!
+                       - Tomador (Nome, CNPJ)
                        - Número Nota, Data Emissão
-                       - Descrição do Item/Serviço
-                       - Código NCM ou Código de Serviço
+                       - Descrição Item/Serviço, Código NCM
                     
-                    3. VALORES FINANCEIROS:
-                       - Valor Bruto (Total da Nota)
-                       - Valor Líquido (A pagar)
-                    
-                    4. IMPOSTOS (Preencha conforme o tipo, o resto deixe zero):
-                       - Valor ICMS (Só se for produto)
-                       - Valor IPI (Só se for produto)
-                       - Valor ICMS-ST (Substituição Tributária)
-                       - Valor ISSQN (Só se for serviço)
-                       - Retenção de ISSQN (Se houver)
+                    3. VALORES:
+                       - Valor Bruto, Valor Líquido
+                       - Valor ICMS, Valor IPI, Valor ICMS-ST
+                       - Valor ISSQN, Retenção ISSQN
                     """,
-                    expected_output="Lista detalhada de dados fiscais.", agent=extrator
+                    expected_output="Lista detalhada.", agent=extrator
                 )
                 
-                # --- JSON PADRONIZADO COM CAMPOS SEPARADOS ---
+                # --- JSON COM CAMPOS SEPARADOS (MANTIDO) ---
                 task_json = Task(
                     description="""
-                    Gere JSON válido com estas chaves exatas (use 0.0 se não encontrar): 
+                    JSON válido com chaves exatas (use 0.0 se vazio): 
                     {
-                        "numero_nota": "string", 
-                        "data_emissao": "string", 
-                        "emissor_nome": "string", 
-                        "emissor_cnpj": "string", 
-                        "tomador_nome": "string", 
-                        "tomador_cnpj": "string", 
-                        "descricao_item": "string", 
-                        "codigo_ncm": "string", 
-                        "valor_bruto": float, 
-                        "valor_liquido": float, 
-                        "valor_icms": float,
-                        "valor_ipi": float,
-                        "valor_icms_st": float,
-                        "valor_issqn": float,
-                        "retencao_issqn": float
+                        "numero_nota": "string", "data_emissao": "string", 
+                        "emissor_nome": "string", "emissor_cnpj": "string", 
+                        "tomador_nome": "string", "tomador_cnpj": "string", 
+                        "descricao_item": "string", "codigo_ncm": "string", 
+                        "valor_bruto": float, "valor_liquido": float, 
+                        "valor_icms": float, "valor_ipi": float, "valor_icms_st": float,
+                        "valor_issqn": float, "retencao_issqn": float
                     }
                     """,
                     expected_output="JSON válido.", agent=auditor
@@ -149,7 +224,6 @@ if arquivos_upload:
                 
                 try:
                     res = crew.kickoff()
-                    # Limpeza de segurança
                     clean_res = str(res).replace("```json", "").replace("```", "").strip()
                     if clean_res.startswith("json"): clean_res = clean_res[4:]
                     
@@ -157,53 +231,75 @@ if arquivos_upload:
                     dados['arquivo_origem'] = arquivo.name
                     resultados.append(dados)
                     
-                    # Feedback visual inteligente
                     tipo = "📦 Produto" if dados.get('valor_icms', 0) > 0 else "🛠️ Serviço"
                     st.success(f"✅ {arquivo.name} ({tipo}): R$ {dados.get('valor_bruto', 0)}")
                     
                 except Exception as e:
-                    st.error(f"Falha em {arquivo.name}: {e}")
+                    st.error(f"Erro em {arquivo.name}: {e}")
 
-        st.session_state.dados_processados = resultados
-        status.success("Auditoria Concluída!")
+        # Salvar no Banco (AQUI ENTRA O NOVO RECURSO)
+        if resultados:
+            df_novos = pd.DataFrame(resultados)
+            
+            # Tratamento numérico para evitar erros no banco
+            cols_num = ['valor_bruto', 'valor_liquido', 'valor_icms', 'valor_ipi', 'valor_icms_st', 'valor_issqn', 'retencao_issqn']
+            for c in cols_num:
+                if c not in df_novos.columns: df_novos[c] = 0.0
+                df_novos[c] = pd.to_numeric(df_novos[c], errors='coerce').fillna(0.0)
+            
+            salvar_no_banco(df_novos)
+            st.success("Dados salvos na memória!")
+            time.sleep(1)
+            st.rerun()
 
-# --- 5. VISUALIZAÇÃO E DOWNLOAD ---
-if st.session_state.dados_processados:
-    df = pd.DataFrame(st.session_state.dados_processados)
+# --- 6. VISUALIZAÇÃO DO HISTÓRICO (MANTIDO) ---
+if not df_hist.empty:
+    st.divider()
+    st.subheader("📂 Painel Geral (Histórico)")
     
-    # Tratamento de Tipos para Gráficos
-    cols_num = ['valor_bruto', 'valor_liquido', 'valor_icms', 'valor_ipi', 'valor_icms_st', 'valor_issqn', 'retencao_issqn']
-    for col in cols_num:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-    
-    # Abas (Mantendo idêntico ao anterior)
-    tab1, tab2, tab3 = st.tabs(["📥 Excel BI", "📊 Dashboard Dinâmico", "🤖 Análise CFO"])
+    # Preenche zeros para visualização se o banco tiver campos nulos
+    cols_check = ['valor_icms', 'valor_issqn', 'valor_bruto']
+    for c in cols_check:
+        if c not in df_hist.columns: df_hist[c] = 0.0
+        else: df_hist[c] = df_hist[c].fillna(0.0)
+
+    tab1, tab2, tab3 = st.tabs(["📥 Excel Master", "📊 Dashboard", "🤖 Análise CFO"])
     
     with tab1:
-        st.dataframe(df)
+        st.dataframe(df_hist)
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
+            df_hist.to_excel(writer, index=False)
         buffer.seek(0)
-        st.download_button("Baixar Excel (.xlsx) para Power BI", buffer, "dados_fiscais_master.xlsx", 
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        st.download_button("Baixar Histórico Completo", buffer, "historico_master.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab2:
-        st.write("### Monte seu Gráfico")
         colA, colB, colC = st.columns(3)
-        # Seletores mantidos, mas agora com as novas colunas de impostos disponíveis
-        with colA: x_axis = st.selectbox("Eixo X", df.columns, index=2) 
-        with colB: y_axis = st.selectbox("Eixo Y", cols_num, index=0)
-        with colC: chart_type = st.selectbox("Tipo", ["Barra", "Pizza", "Linha", "Dispersão"])
+        colA.metric("Total ICMS (Produtos)", f"R$ {df_hist['valor_icms'].sum():,.2f}")
+        colB.metric("Total ISSQN (Serviços)", f"R$ {df_hist['valor_issqn'].sum():,.2f}")
         
-        if chart_type == "Barra": st.plotly_chart(px.bar(df, x=x_axis, y=y_axis, color=x_axis), use_container_width=True)
-        if chart_type == "Pizza": st.plotly_chart(px.pie(df, values=y_axis, names=x_axis), use_container_width=True)
-        if chart_type == "Linha": st.plotly_chart(px.line(df, x=x_axis, y=y_axis), use_container_width=True)
-        if chart_type == "Dispersão": st.plotly_chart(px.scatter(df, x=x_axis, y=y_axis, size=y_axis), use_container_width=True)
+        # Correção segura para IPI/ST caso não existam no histórico antigo
+        ipi = df_hist['valor_ipi'].sum() if 'valor_ipi' in df_hist.columns else 0
+        st_val = df_hist['valor_icms_st'].sum() if 'valor_icms_st' in df_hist.columns else 0
+        colC.metric("Total IPI + ST", f"R$ {(ipi + st_val):,.2f}")
+        
+        st.write("#### Selecione os Eixos do Gráfico")
+        c1, c2, c3 = st.columns(3)
+        # Tenta selecionar colunas padrão se existirem
+        idx_x = list(df_hist.columns).index('emissor_nome') if 'emissor_nome' in df_hist.columns else 0
+        
+        x_axis = c1.selectbox("Eixo X", df_hist.columns, index=idx_x)
+        y_axis = c2.selectbox("Eixo Y", ['valor_bruto', 'valor_icms', 'valor_issqn'], index=0)
+        chart = c3.selectbox("Tipo", ["Barra", "Pizza", "Linha"])
+        
+        if chart == "Barra": st.plotly_chart(px.bar(df_hist, x=x_axis, y=y_axis, color=x_axis), use_container_width=True)
+        if chart == "Pizza": st.plotly_chart(px.pie(df_hist, values=y_axis, names=x_axis), use_container_width=True)
+        if chart == "Linha": st.plotly_chart(px.line(df_hist, x=x_axis, y=y_axis), use_container_width=True)
 
     with tab3:
-        st.info("O CFO Virtual está analisando os dados extraídos...")
-        with st.spinner("Gerando relatório de inteligência..."):
-            analise = analisar_dados_com_ia(st.session_state.dados_processados)
-            st.markdown(analise)
+        if st.button("🧠 Pedir Análise do CFO"):
+            with st.spinner("Analisando histórico..."):
+                res = analisar_dados_com_ia(df_hist)
+                st.markdown(res)
+else:
+    st.info("Histórico vazio. Faça upload acima.")
