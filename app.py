@@ -27,7 +27,7 @@ def conectar_banco():
 def inicializar_banco():
     conn = conectar_banco()
     c = conn.cursor()
-    # Cria a tabela se não existir
+    # Tabela com todos os campos fiscais
     c.execute('''
         CREATE TABLE IF NOT EXISTS notas_fiscais (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +60,6 @@ def salvar_no_banco(df_novo):
     conn = conectar_banco()
     df_novo['data_upload'] = datetime.now()
     
-    # Lista de colunas para o banco
     colunas_banco = [
         'arquivo_origem', 'numero_nota', 'data_emissao', 
         'emissor_nome', 'emissor_cnpj', 'tomador_nome', 'tomador_cnpj',
@@ -75,7 +74,7 @@ def salvar_no_banco(df_novo):
         if col not in df_novo.columns:
             df_novo[col] = None
             
-    # Salva o JSON completo (aqui ficará o valor_desconto salvo, mesmo sem coluna própria)
+    # Salva o JSON completo (backup técnico invisível ao cliente)
     df_novo['json_completo'] = df_novo.apply(lambda x: x.to_json(), axis=1)
     
     colunas_finais = colunas_banco + ['json_completo']
@@ -172,7 +171,7 @@ if arquivos_upload:
                 texto = ler_pdf(arquivo)
                 extrator, auditor = criar_equipe_extracao()
                 
-                # --- PROMPT BLINDADO (NOVO) ---
+                # --- PROMPT BLINDADO ---
                 task_ex = Task(
                     description=f"""
                     Você é um Auditor Fiscal implacável. Analise o texto da nota fiscal:
@@ -265,25 +264,47 @@ if arquivos_upload:
             time.sleep(1)
             st.rerun()
 
-# --- 6. VISUALIZAÇÃO ---
+# --- 6. VISUALIZAÇÃO LIMPA (SEM JSON) ---
 if not df_hist.empty:
     st.divider()
     st.subheader("📂 Painel Geral")
     
+    # 1. CRIAÇÃO DA VISUALIZAÇÃO LIMPA
+    # Remove colunas técnicas que o cliente não precisa ver
+    cols_to_drop = ['json_completo', 'id']
+    df_visual = df_hist.drop(columns=cols_to_drop, errors='ignore')
+
+    # Preenche zeros para visualização bonita
     cols_check = ['valor_icms', 'valor_issqn', 'valor_bruto']
     for c in cols_check:
-        if c not in df_hist.columns: df_hist[c] = 0.0
-        else: df_hist[c] = df_hist[c].fillna(0.0)
+        if c not in df_visual.columns: df_visual[c] = 0.0
+        else: df_visual[c] = df_visual[c].fillna(0.0)
 
-    tab1, tab2, tab3 = st.tabs(["📥 Excel Master", "📊 Dashboard", "🤖 Análise CFO"])
+    # Reordena as colunas de forma lógica (se existirem)
+    ordem_ideal = [
+        'data_upload', 'arquivo_origem', 'numero_nota', 'data_emissao',
+        'emissor_nome', 'emissor_cnpj', 
+        'tomador_nome', 'tomador_cnpj',
+        'descricao_item', 'codigo_ncm',
+        'valor_bruto', 'valor_liquido',
+        'valor_icms', 'valor_ipi', 'valor_icms_st', 
+        'valor_issqn', 'retencao_issqn'
+    ]
+    # Filtra apenas as colunas que realmente estão no banco para não dar erro
+    cols_existentes = [c for c in ordem_ideal if c in df_visual.columns]
+    df_visual = df_visual[cols_existentes]
+
+    tab1, tab2, tab3 = st.tabs(["📥 Excel Limpo", "📊 Dashboard", "🤖 Análise CFO"])
     
     with tab1:
-        st.dataframe(df_hist)
+        st.dataframe(df_visual) # Mostra tabela sem JSON
+        
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df_hist.to_excel(writer, index=False)
+            df_visual.to_excel(writer, index=False) # Baixa Excel sem JSON
         buffer.seek(0)
-        st.download_button("Baixar Histórico Completo", buffer, "historico_opertix.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        
+        st.download_button("Baixar Relatório Gerencial (.xlsx)", buffer, "relatorio_opertix.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tab2:
         colA, colB, colC = st.columns(3)
@@ -296,15 +317,19 @@ if not df_hist.empty:
         
         st.write("#### Selecione os Eixos do Gráfico")
         c1, c2, c3 = st.columns(3)
-        idx_x = list(df_hist.columns).index('emissor_nome') if 'emissor_nome' in df_hist.columns else 0
         
-        x_axis = c1.selectbox("Eixo X", df_hist.columns, index=idx_x)
-        y_axis = c2.selectbox("Eixo Y", ['valor_bruto', 'valor_icms', 'valor_issqn'], index=0)
+        # Usa df_visual para garantir que o JSON não apareça nas opções do gráfico
+        idx_x = list(df_visual.columns).index('emissor_nome') if 'emissor_nome' in df_visual.columns else 0
+        
+        x_axis = c1.selectbox("Eixo X", df_visual.columns, index=idx_x)
+        # Filtra apenas colunas numéricas para o Y
+        cols_numericas = [c for c in df_visual.columns if df_visual[c].dtype in ['float64', 'int64']]
+        y_axis = c2.selectbox("Eixo Y", cols_numericas if cols_numericas else df_visual.columns, index=0)
         chart = c3.selectbox("Tipo", ["Barra", "Pizza", "Linha"])
         
-        if chart == "Barra": st.plotly_chart(px.bar(df_hist, x=x_axis, y=y_axis, color=x_axis), use_container_width=True)
-        if chart == "Pizza": st.plotly_chart(px.pie(df_hist, values=y_axis, names=x_axis), use_container_width=True)
-        if chart == "Linha": st.plotly_chart(px.line(df_hist, x=x_axis, y=y_axis), use_container_width=True)
+        if chart == "Barra": st.plotly_chart(px.bar(df_visual, x=x_axis, y=y_axis, color=x_axis), use_container_width=True)
+        if chart == "Pizza": st.plotly_chart(px.pie(df_visual, values=y_axis, names=x_axis), use_container_width=True)
+        if chart == "Linha": st.plotly_chart(px.line(df_visual, x=x_axis, y=y_axis), use_container_width=True)
 
     with tab3:
         if st.button("🧠 Pedir Análise do CFO"):
