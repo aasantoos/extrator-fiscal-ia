@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import json
 import plotly.express as px
+import io  # <--- NOVA IMPORTAÇÃO NECESSÁRIA PARA O EXCEL
 from crewai import Agent, Task, Crew, Process
 from PyPDF2 import PdfReader
 
@@ -45,7 +46,6 @@ def criar_equipe_extracao():
     return extrator, auditor
 
 def analisar_dados_com_ia(df_json):
-    """Cria um agente extra para analisar o resultado final."""
     analista = Agent(
         role='CFO Virtual',
         goal='Analisar os gastos e impostos extraídos e gerar insights.',
@@ -73,7 +73,7 @@ def analisar_dados_com_ia(df_json):
 
 # --- 3. INTERFACE ---
 st.title("📊 Dashboard Fiscal com IA")
-st.markdown("Extração de dados + Análise Financeira Automática.")
+st.markdown("Extração de dados + Exportação para Power BI.")
 
 arquivos_upload = st.file_uploader("Upload de Notas (PDF)", type="pdf", accept_multiple_files=True)
 
@@ -88,7 +88,6 @@ if arquivos_upload:
         barra = st.progress(0)
         status = st.empty()
         
-        # Aba de logs para não poluir a visão principal
         with st.expander("Ver logs de processamento", expanded=True):
             for i, arquivo in enumerate(arquivos_upload):
                 barra.progress((i + 1) / len(arquivos_upload))
@@ -97,9 +96,8 @@ if arquivos_upload:
                 texto = ler_pdf(arquivo)
                 extrator, auditor = criar_equipe_extracao()
                 
-                # Tarefa simplificada para o exemplo (mas usando o prompt universal)
                 task_ex = Task(
-                    description=f"Extraia do texto:\n{texto}\nCampos: Emissor, CNPJ Emissor, Data, Valor Total, Valor Liquido, Valor Impostos (Soma de ICMS/ISS).",
+                    description=f"Extraia do texto:\n{texto}\nCampos: Emissor, CNPJ Emissor, Data, Valor Total, Valor Liquido, Valor Impostos (Soma de ICMS/ISS/IPI).",
                     expected_output="Lista de dados.", agent=extrator
                 )
                 task_json = Task(
@@ -122,49 +120,47 @@ if arquivos_upload:
         st.session_state.dados_processados = resultados
         status.success("Concluído!")
 
-# --- 5. VISUALIZAÇÃO E B.I. ---
+# --- 5. VISUALIZAÇÃO E EXPORTAÇÃO BI ---
 if st.session_state.dados_processados:
     df = pd.DataFrame(st.session_state.dados_processados)
     
-    # Tratamento de dados para gráficos (garantir que números são números)
+    # Tratamento numérico para evitar erro no Excel
     df['valor_total'] = pd.to_numeric(df['valor_total'], errors='coerce').fillna(0)
     df['valor_impostos'] = pd.to_numeric(df['valor_impostos'], errors='coerce').fillna(0)
+    df['valor_liquido'] = pd.to_numeric(df['valor_liquido'], errors='coerce').fillna(0)
     
-    # Criando Abas
-    tab1, tab2, tab3 = st.tabs(["📂 Dados Brutos", "📈 Dashboard Visual", "🤖 Análise do CFO"])
+    tab1, tab2, tab3 = st.tabs(["📂 Dados & Download BI", "📈 Dashboard Rápido", "🤖 Análise do CFO"])
     
     with tab1:
+        st.markdown("### Exportar para Power BI / Excel")
+        st.write("Baixe o arquivo abaixo e abra diretamente no Power BI (Obter Dados > Excel).")
         st.dataframe(df)
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("Baixar CSV", csv, "relatorio_fiscal.csv", "text/csv")
+        
+        # --- LÓGICA DE EXCEL (NOVA) ---
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Base_Dados_Fiscal')
+            
+        st.download_button(
+            label="📥 Baixar Excel (.xlsx) para BI",
+            data=buffer,
+            file_name="base_fiscal_bi.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
         
     with tab2:
         col1, col2, col3 = st.columns(3)
-        total_gasto = df['valor_total'].sum()
-        total_imposto = df['valor_impostos'].sum()
-        
-        col1.metric("Total Gasto", f"R$ {total_gasto:,.2f}")
-        col2.metric("Total Impostos", f"R$ {total_imposto:,.2f}")
-        col3.metric("Carga Tributária", f"{((total_imposto/total_gasto)*100):.1f}%" if total_gasto > 0 else "0%")
+        col1.metric("Total Gasto", f"R$ {df['valor_total'].sum():,.2f}")
+        col2.metric("Total Impostos", f"R$ {df['valor_impostos'].sum():,.2f}")
+        col3.metric("Líquido", f"R$ {df['valor_liquido'].sum():,.2f}")
         
         st.divider()
-        
-        # Gráfico 1: Quem levou meu dinheiro?
-        fig_fornecedor = px.bar(df, x='emissor', y='valor_total', title="Gastos por Fornecedor", color='valor_total')
-        st.plotly_chart(fig_fornecedor, use_container_width=True)
-        
-        # Gráfico 2: Composição (Pizza)
-        # Criando um DF auxiliar para pizza
-        df_pizza = pd.DataFrame({
-            'Categoria': ['Valor Líquido', 'Impostos'],
-            'Valor': [df['valor_liquido'].sum(), df['valor_impostos'].sum()]
-        })
-        fig_pizza = px.pie(df_pizza, values='Valor', names='Categoria', title="Peso dos Impostos no Custo Total")
-        st.plotly_chart(fig_pizza, use_container_width=True)
+        fig_bar = px.bar(df, x='emissor', y='valor_total', title="Gastos por Fornecedor")
+        st.plotly_chart(fig_bar, use_container_width=True)
 
     with tab3:
-        st.info("O Agente 'CFO Virtual' está analisando seus números agora...")
-        with st.spinner("Escrevendo relatório..."):
-            # Envia o JSON dos dados para a IA analisar
+        st.info("O CFO Virtual está analisando...")
+        with st.spinner("Gerando insights..."):
             resumo_ia = analisar_dados_com_ia(st.session_state.dados_processados)
             st.markdown(resumo_ia)
