@@ -14,7 +14,7 @@ from streamlit_option_menu import option_menu
 # --- 1. CONFIGURAÇÕES INICIAIS ---
 st.set_page_config(page_title="Opertix System", page_icon="🚀", layout="wide")
 
-# CSS PERSONALIZADO (VISUAL DARK & LOGIN)
+# CSS PERSONALIZADO (VISUAL DARK, LOGIN & ESTILOS NOVOS)
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; }
@@ -31,12 +31,27 @@ st.markdown("""
     /* Menu Lateral */
     .css-1d391kg { background-color: #262730; }
     
-    /* Estilo do Formulário de Login */
+    /* === NOVO: ESTILO DO LOGIN === */
+    
+    /* 1. Esconder a frase "Press Enter to submit form" */
+    [data-testid="InputInstructions"] {
+        display: none !important;
+    }
+    
+    /* 2. Retângulo (Borda) em volta dos campos de digitação (User/Senha) */
+    div[data-baseweb="input"] > div {
+        border: 1px solid #555 !important;
+        border-radius: 8px !important;
+        background-color: #1E1E24 !important;
+    }
+    
+    /* 3. Caixa do Formulário de Login (Mais destacada) */
     div[data-testid="stForm"] {
         background-color: #262730;
-        padding: 30px;
+        padding: 40px;
         border-radius: 15px;
         border: 1px solid #444;
+        box-shadow: 0px 0px 30px rgba(0,0,0,0.7); /* Sombra mais forte */
     }
 </style>
 """, unsafe_allow_html=True)
@@ -70,8 +85,9 @@ def verificar_login():
             st.markdown("<p style='text-align: center; color: gray;'>Sistema de Inteligência Fiscal</p>", unsafe_allow_html=True)
             
             with st.form("login_form"):
-                user = st.text_input("Usuário")
-                pwd = st.text_input("Senha", type="password")
+                st.markdown("**Credenciais de Acesso**")
+                user = st.text_input("Usuário", placeholder="Digite seu usuário")
+                pwd = st.text_input("Senha", type="password", placeholder="Digite sua senha")
                 st.markdown("<br>", unsafe_allow_html=True)
                 submit = st.form_submit_button("Acessar Sistema", type="primary", use_container_width=True)
                 
@@ -158,7 +174,7 @@ def carregar_historico():
 
 inicializar_banco()
 
-# --- 5. AGENTES DE IA (PROMPTS BLINDADOS RESTAURADOS) ---
+# --- 5. AGENTES DE IA (PROMPTS BLINDADOS) ---
 def ler_pdf(uploaded_file):
     try:
         pdf_reader = PdfReader(uploaded_file)
@@ -248,7 +264,7 @@ if selected == "Nova Auditoria":
                 texto = ler_pdf(arquivo)
                 extrator, auditor = criar_equipe_extracao()
                 
-                # === PROMPT BLINDADO RESTAURADO ===
+                # === PROMPT BLINDADO ===
                 t1 = Task(
                     description=f"""
                     Analise o texto da nota:
