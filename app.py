@@ -12,19 +12,26 @@ import plotly.express as px
 from crewai import Agent, Task, Crew
 from PyPDF2 import PdfReader
 from streamlit_option_menu import option_menu
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
 
-# --- 1. CONFIGURAÇÕES INICIAIS ---
+# --- 1. CONFIGURAÇÕES INICIAIS E VISUAL ---
 st.set_page_config(page_title="Opertix System", page_icon="🚀", layout="wide")
 
-# CSS PERSONALIZADO (VISUAL DARK, LOGIN & ESTILOS)
+# CSS PERSONALIZADO (LOGIN, KPI, DARK MODE)
 st.markdown("""
 <style>
+    /* Fundo Geral */
     .stApp { background-color: #0E1117; }
     
     /* Cards de KPI */
     .kpi-card {
-        background-color: #262730; padding: 20px; border-radius: 10px;
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.5); text-align: center;
+        background-color: #262730; 
+        padding: 20px; 
+        border-radius: 10px;
+        box-shadow: 2px 2px 10px rgba(0,0,0,0.5); 
+        text-align: center;
         border-left: 5px solid #FF4B4B;
     }
     .kpi-value { font-size: 32px; font-weight: bold; color: #FFFFFF; margin: 0; }
@@ -33,7 +40,7 @@ st.markdown("""
     /* Menu Lateral */
     .css-1d391kg { background-color: #262730; }
     
-    /* === ESTILO DO LOGIN === */
+    /* Ajustes do Login */
     [data-testid="InputInstructions"] { display: none !important; }
     
     div[data-baseweb="input"] > div {
@@ -52,11 +59,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Configuração API Key
+# Configuração da API Key
 if "OPENAI_API_KEY" in st.secrets:
     os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 else:
-    os.environ["OPENAI_API_KEY"] = "SUA_CHAVE_AQUI"
+    os.environ["OPENAI_API_KEY"] = "SUA_CHAVE_AQUI" # Coloque sua chave aqui se rodar local sem secrets
 
 MODELO_LLM = "gpt-4o-mini"
 
@@ -73,7 +80,7 @@ def verificar_login():
         st.session_state['usuario_atual'] = None
 
     if not st.session_state['logado']:
-        # Layout ajustado para [1, 2, 1] para a caixa ficar mais larga e não cortar texto
+        # Layout ajustado [1, 2, 1] para a caixa ficar larga
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("<br><br>", unsafe_allow_html=True)
@@ -100,15 +107,15 @@ def verificar_login():
         return False
     return True
 
-# --- 3. BLOQUEIO DE SEGURANÇA ---
+# Bloqueio de Segurança
 if not verificar_login():
     st.stop()
 
 # =========================================================
-# ÁREA RESTRITA (SISTEMA CARREGA AQUI)
+# ÁREA RESTRITA (SISTEMA CARREGA ABAIXO)
 # =========================================================
 
-# --- 4. CONEXÃO GOOGLE SHEETS (NUVEM) ---
+# --- 3. CONEXÃO GOOGLE SHEETS (NUVEM) ---
 def conectar_gsheets():
     """Tenta conectar ao Google Sheets usando creds.json"""
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -116,7 +123,7 @@ def conectar_gsheets():
         if os.path.exists("creds.json"):
             creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
             client = gspread.authorize(creds)
-            # Tenta abrir a planilha pelo nome exato
+            # ATENÇÃO: O nome aqui deve ser EXATAMENTE igual ao da sua planilha no Google
             sheet = client.open("Dados Fiscais Opertix").sheet1
             return sheet
         else:
@@ -124,7 +131,7 @@ def conectar_gsheets():
     except Exception as e:
         return None
 
-# --- 5. BANCO DE DADOS (HÍBRIDO) ---
+# --- 4. BANCO DE DADOS (LOCAL + NUVEM) ---
 def conectar_banco():
     return sqlite3.connect("dados_fiscais.db")
 
@@ -161,7 +168,7 @@ def inicializar_banco():
 def salvar_no_banco(df_novo):
     if df_novo.empty: return
     
-    # 1. SALVAR NO SQLITE (LOCAL/CACHE)
+    # 1. SALVAR NO SQLITE (LOCAL)
     conn = conectar_banco()
     df_novo['data_upload'] = datetime.now()
     
@@ -175,7 +182,7 @@ def salvar_no_banco(df_novo):
         
     df_novo['json_completo'] = df_novo.apply(lambda x: x.to_json(), axis=1)
     
-    # Prepara cópia para salvar (datas como string para evitar erro)
+    # Prepara dataframe para salvar (converte data para string)
     df_salvar = df_novo.copy()
     df_salvar['data_upload'] = df_salvar['data_upload'].astype(str)
     
@@ -187,22 +194,23 @@ def salvar_no_banco(df_novo):
     sheet = conectar_gsheets()
     if sheet:
         try:
-            # Se a planilha estiver vazia, cria cabeçalho
+            # Debug visual para confirmar conexão
+            st.info(f"🔗 Conectado à planilha: {sheet.title} (ID: {sheet.spreadsheet.id})")
+            
+            # Se planilha vazia, cria cabeçalho
             if len(sheet.get_all_values()) == 0:
                 sheet.append_row(colunas_banco)
             
-            # Converte dados para lista de strings (Sheets não aceita tipos complexos)
+            # Converte para lista e salva
             dados_nuvem = df_salvar[colunas_banco].fillna("").values.tolist()
-            
             for linha in dados_nuvem:
                 sheet.append_row(linha)
             
             st.toast("Backup na Nuvem (Google Sheets) realizado!", icon="☁️")
         except Exception as e:
-            st.warning(f"Salvo localmente, mas erro ao sincronizar nuvem: {e}")
+            st.error(f"Erro ao salvar na nuvem: {e}")
     else:
-        # Se não tiver creds.json ou não achar a planilha, avisa mas não trava
-        st.toast("Salvo apenas localmente (Nuvem desconectada)", icon="💾")
+        st.warning("Salvo apenas Localmente (Planilha não encontrada ou creds.json ausente).")
 
 def carregar_historico():
     conn = conectar_banco()
@@ -215,7 +223,88 @@ def carregar_historico():
 
 inicializar_banco()
 
-# --- 6. AGENTES E AUXILIARES ---
+# --- 5. GERADOR DE PDF ---
+def gerar_relatorio_pdf(df_filtrado):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    
+    # Cabeçalho
+    c.setFillColor(colors.darkblue)
+    c.rect(0, height - 100, width, 100, fill=True, stroke=False)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 28)
+    c.drawString(40, height - 60, "OPERTIX")
+    c.setFont("Helvetica", 14)
+    c.drawString(40, height - 85, "Relatório de Auditoria Fiscal & Financeira")
+    
+    # Corpo
+    c.setFillColor(colors.black)
+    y = height - 150
+    
+    # Resumo Financeiro
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(40, y, "1. Resumo do Período")
+    y -= 30
+    
+    val_bruto = df_filtrado['valor_bruto'].sum()
+    val_liq = df_filtrado['valor_liquido'].sum()
+    val_icms = df_filtrado['valor_icms'].sum()
+    val_iss = df_filtrado['valor_issqn'].sum()
+    
+    c.setFont("Helvetica", 12)
+    c.drawString(40, y, f"• Total Processado: R$ {val_bruto:,.2f}")
+    y -= 20
+    c.drawString(40, y, f"• Total Líquido a Pagar: R$ {val_liq:,.2f}")
+    y -= 20
+    c.drawString(40, y, f"• Total ICMS (Produtos): R$ {val_icms:,.2f}")
+    y -= 20
+    c.drawString(40, y, f"• Total ISSQN (Serviços): R$ {val_iss:,.2f}")
+    
+    y -= 40
+    c.setStrokeColor(colors.gray)
+    c.line(40, y, width - 40, y)
+    y -= 40
+    
+    # Detalhamento
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(40, y, "2. Detalhamento por Nota (Top Recentes)")
+    y -= 30
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(40, y, "DATA")
+    c.drawString(120, y, "EMISSOR")
+    c.drawString(300, y, "TIPO")
+    c.drawString(450, y, "VALOR")
+    y -= 15
+    
+    c.setFont("Helvetica", 9)
+    # Pega apenas as primeiras 30 notas para não quebrar o PDF de exemplo
+    for idx, row in df_filtrado.head(30).iterrows():
+        if y < 50: # Nova página se acabar espaço
+            c.showPage()
+            y = height - 50
+        
+        data = str(row['data_emissao'])[:10]
+        emissor = str(row['emissor_nome'])[:25]
+        tipo = "Produto" if row['valor_icms'] > 0 else "Serviço"
+        valor = f"R$ {row['valor_bruto']:,.2f}"
+        
+        c.drawString(40, y, data)
+        c.drawString(120, y, emissor)
+        c.drawString(300, y, tipo)
+        c.drawString(450, y, valor)
+        y -= 15
+
+    # Rodapé
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawString(40, 30, f"Gerado automaticamente em {datetime.now().strftime('%d/%m/%Y')}")
+
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+# --- 6. AGENTES IA & UTILITÁRIOS ---
 def ler_pdf(uploaded_file):
     try:
         pdf_reader = PdfReader(uploaded_file)
@@ -228,7 +317,7 @@ def criar_equipe_extracao():
     extrator = Agent(
         role='Auditor Tributário Sênior',
         goal='Extrair dados com fidelidade absoluta, distinguindo Comércio (ICMS) e Serviço (ISS).',
-        backstory='Especialista em legislação fiscal. Você não inventa dados. Se não achar, deixa vazio.',
+        backstory='Especialista em legislação fiscal. Você não inventa dados.',
         verbose=False, allow_delegation=False, llm=MODELO_LLM
     )
     auditor = Agent(
@@ -305,32 +394,26 @@ if selected == "Nova Auditoria":
                 texto = ler_pdf(arquivo)
                 extrator, auditor = criar_equipe_extracao()
                 
-                # === PROMPTS BLINDADOS (COMPLETOS) ===
+                # Tarefas Blindadas
                 t1 = Task(
                     description=f"""
-                    Analise o texto da nota:
+                    Analise o texto:
                     ---
                     {texto}
                     ---
-                    REGRAS DE OURO:
-                    1. NÃO ALUCINE. Se não achar, retorne "N/A" ou 0.0.
-                    2. DATAS: Converta SEMPRE para DD/MM/AAAA.
-                    3. VALORES: Ignore 'R$'. Use ponto para decimais.
-                    
-                    IDENTIFIQUE E EXTRAIA:
-                    A) TIPO: DANFE (Foco ICMS/IPI) ou NFS-e (Foco ISSQN).
-                    B) ENTIDADES: Emissor (Prestador) e Tomador (Cliente). NÃO INVERTA.
-                    C) DETALHES: Número, Data, Descrição, NCM.
-                    D) FINANCEIRO: Valor Bruto, DESCONTO, Valor Líquido.
-                    E) IMPOSTOS: ICMS, IPI, ICMS-ST, ISSQN, Retenção ISS.
+                    REGRAS:
+                    1. NÃO ALUCINE. Se não achar, use 0.0.
+                    2. DATAS: Converta para DD/MM/AAAA.
+                    3. EXTRAIA: Tipo (DANFE/NFSe), Emissor, Tomador, Num, Data.
+                    4. FINANCEIRO: Bruto, Líquido, Desconto.
+                    5. IMPOSTOS: ICMS, IPI, ISSQN, Retenções.
                     """,
-                    expected_output="Lista estruturada.", agent=extrator
+                    expected_output="Dados extraídos.", agent=extrator
                 )
                 
                 t2 = Task(
                     description="""
-                    Gere APENAS um JSON válido.
-                    Estrutura Obrigatória (use 0.0 se vazio):
+                    Gere JSON válido:
                     {
                         "numero_nota": "string", "data_emissao": "string", 
                         "emissor_nome": "string", "emissor_cnpj": "string", 
@@ -362,7 +445,7 @@ if selected == "Nova Auditoria":
                     df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
                 
                 salvar_no_banco(df)
-                status_text.success("✅ Processamento concluído! Salvo no Local e na Nuvem.")
+                status_text.success("✅ Processamento concluído! Dados salvos.")
                 time.sleep(2)
 
 # === DASHBOARD BI ===
@@ -373,7 +456,18 @@ elif selected == "Dashboard BI":
     if df.empty:
         st.warning("Nenhum dado encontrado.")
     else:
-        # Filtro Visual (Remove JSON da tela)
+        # Botão PDF
+        col_pdf, _ = st.columns([1, 4])
+        with col_pdf:
+            pdf_bytes = gerar_relatorio_pdf(df)
+            st.download_button(
+                label="📄 Baixar Relatório Executivo (PDF)",
+                data=pdf_bytes,
+                file_name="relatorio_opertix.pdf",
+                mime="application/pdf"
+            )
+
+        # Filtro Visual
         cols_drop = ['json_completo', 'id']
         df_visual = df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore')
 
@@ -434,7 +528,7 @@ elif selected == "Banco de Dados":
                 conn.execute("DELETE FROM notas_fiscais")
                 conn.commit()
                 conn.close()
-                st.warning("Base Local limpa! (Google Sheets permanece intacto)")
+                st.warning("Base Local limpa!")
                 time.sleep(1)
                 st.rerun()
         with c2:
