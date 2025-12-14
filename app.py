@@ -5,6 +5,8 @@ import json
 import io
 import sqlite3
 import time
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import plotly.express as px
 from crewai import Agent, Task, Crew
@@ -14,7 +16,7 @@ from streamlit_option_menu import option_menu
 # --- 1. CONFIGURAÇÕES INICIAIS ---
 st.set_page_config(page_title="Opertix System", page_icon="🚀", layout="wide")
 
-# CSS PERSONALIZADO (VISUAL DARK, LOGIN & ESTILOS NOVOS)
+# CSS PERSONALIZADO (VISUAL DARK, LOGIN & ESTILOS)
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; }
@@ -32,20 +34,14 @@ st.markdown("""
     .css-1d391kg { background-color: #262730; }
     
     /* === ESTILO DO LOGIN === */
+    [data-testid="InputInstructions"] { display: none !important; }
     
-    /* 1. Esconder a frase "Press Enter to submit form" */
-    [data-testid="InputInstructions"] {
-        display: none !important;
-    }
-    
-    /* 2. Retângulo (Borda) em volta dos campos de digitação */
     div[data-baseweb="input"] > div {
         border: 1px solid #555 !important;
         border-radius: 8px !important;
         background-color: #1E1E24 !important;
     }
     
-    /* 3. Caixa do Formulário de Login (Mais destacada e Larga) */
     div[data-testid="stForm"] {
         background-color: #262730;
         padding: 40px;
@@ -77,8 +73,7 @@ def verificar_login():
         st.session_state['usuario_atual'] = None
 
     if not st.session_state['logado']:
-        # LAYOUT DA TELA DE LOGIN (AJUSTADO PARA SER MAIS LARGO)
-        # Mudamos de [1,1,1] para [1,2,1] para dar mais espaço ao texto
+        # Layout ajustado para [1, 2, 1] para a caixa ficar mais larga e não cortar texto
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("<br><br>", unsafe_allow_html=True)
@@ -87,7 +82,6 @@ def verificar_login():
             
             with st.form("login_form"):
                 st.markdown("**Credenciais de Acesso**")
-                # Placeholder corrigido e caixa mais larga para não cortar
                 user = st.text_input("Usuário", placeholder="Digite seu usuário")
                 pwd = st.text_input("Senha", type="password", placeholder="Digite sua senha")
                 
@@ -108,13 +102,29 @@ def verificar_login():
 
 # --- 3. BLOQUEIO DE SEGURANÇA ---
 if not verificar_login():
-    st.stop() 
+    st.stop()
 
 # =========================================================
 # ÁREA RESTRITA (SISTEMA CARREGA AQUI)
 # =========================================================
 
-# --- 4. FUNÇÕES DE BANCO DE DADOS ---
+# --- 4. CONEXÃO GOOGLE SHEETS (NUVEM) ---
+def conectar_gsheets():
+    """Tenta conectar ao Google Sheets usando creds.json"""
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    try:
+        if os.path.exists("creds.json"):
+            creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
+            client = gspread.authorize(creds)
+            # Tenta abrir a planilha pelo nome exato
+            sheet = client.open("Dados Fiscais Opertix").sheet1
+            return sheet
+        else:
+            return None
+    except Exception as e:
+        return None
+
+# --- 5. BANCO DE DADOS (HÍBRIDO) ---
 def conectar_banco():
     return sqlite3.connect("dados_fiscais.db")
 
@@ -150,6 +160,8 @@ def inicializar_banco():
 
 def salvar_no_banco(df_novo):
     if df_novo.empty: return
+    
+    # 1. SALVAR NO SQLITE (LOCAL/CACHE)
     conn = conectar_banco()
     df_novo['data_upload'] = datetime.now()
     
@@ -162,9 +174,35 @@ def salvar_no_banco(df_novo):
         if col not in df_novo.columns: df_novo[col] = None
         
     df_novo['json_completo'] = df_novo.apply(lambda x: x.to_json(), axis=1)
+    
+    # Prepara cópia para salvar (datas como string para evitar erro)
+    df_salvar = df_novo.copy()
+    df_salvar['data_upload'] = df_salvar['data_upload'].astype(str)
+    
     colunas_finais = colunas_banco + ['json_completo']
-    df_novo[colunas_finais].to_sql('notas_fiscais', conn, if_exists='append', index=False)
+    df_salvar[colunas_finais].to_sql('notas_fiscais', conn, if_exists='append', index=False)
     conn.close()
+
+    # 2. SALVAR NO GOOGLE SHEETS (NUVEM)
+    sheet = conectar_gsheets()
+    if sheet:
+        try:
+            # Se a planilha estiver vazia, cria cabeçalho
+            if len(sheet.get_all_values()) == 0:
+                sheet.append_row(colunas_banco)
+            
+            # Converte dados para lista de strings (Sheets não aceita tipos complexos)
+            dados_nuvem = df_salvar[colunas_banco].fillna("").values.tolist()
+            
+            for linha in dados_nuvem:
+                sheet.append_row(linha)
+            
+            st.toast("Backup na Nuvem (Google Sheets) realizado!", icon="☁️")
+        except Exception as e:
+            st.warning(f"Salvo localmente, mas erro ao sincronizar nuvem: {e}")
+    else:
+        # Se não tiver creds.json ou não achar a planilha, avisa mas não trava
+        st.toast("Salvo apenas localmente (Nuvem desconectada)", icon="💾")
 
 def carregar_historico():
     conn = conectar_banco()
@@ -177,7 +215,7 @@ def carregar_historico():
 
 inicializar_banco()
 
-# --- 5. AGENTES DE IA ---
+# --- 6. AGENTES E AUXILIARES ---
 def ler_pdf(uploaded_file):
     try:
         pdf_reader = PdfReader(uploaded_file)
@@ -219,7 +257,7 @@ def card_metric_html(label, value, prefix="R$"):
     </div>
     """
 
-# --- 6. MENU LATERAL E NAVEGAÇÃO ---
+# --- 7. MENU LATERAL ---
 with st.sidebar:
     st.markdown("<h1 style='text-align: center; color: #FF4B4B;'>OPERTIX</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align: center; color: gray;'>Usuário: <b>{st.session_state['usuario_atual']}</b></p>", unsafe_allow_html=True)
@@ -245,7 +283,7 @@ with st.sidebar:
         st.session_state['usuario_atual'] = None
         st.rerun()
 
-# --- 7. PÁGINAS DO SISTEMA ---
+# --- 8. PÁGINAS ---
 
 # === NOVA AUDITORIA ===
 if selected == "Nova Auditoria":
@@ -267,7 +305,7 @@ if selected == "Nova Auditoria":
                 texto = ler_pdf(arquivo)
                 extrator, auditor = criar_equipe_extracao()
                 
-                # === PROMPT BLINDADO ===
+                # === PROMPTS BLINDADOS (COMPLETOS) ===
                 t1 = Task(
                     description=f"""
                     Analise o texto da nota:
@@ -324,8 +362,8 @@ if selected == "Nova Auditoria":
                     df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
                 
                 salvar_no_banco(df)
-                status_text.success("✅ Processamento concluído! Vá para a aba Dashboard.")
-                time.sleep(1)
+                status_text.success("✅ Processamento concluído! Salvo no Local e na Nuvem.")
+                time.sleep(2)
 
 # === DASHBOARD BI ===
 elif selected == "Dashboard BI":
@@ -335,7 +373,7 @@ elif selected == "Dashboard BI":
     if df.empty:
         st.warning("Nenhum dado encontrado.")
     else:
-        # Filtro Visual (Remove JSON)
+        # Filtro Visual (Remove JSON da tela)
         cols_drop = ['json_completo', 'id']
         df_visual = df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore')
 
@@ -391,12 +429,12 @@ elif selected == "Banco de Dados":
         
         c1, c2 = st.columns([1, 4])
         with c1:
-            if st.button("🗑️ Deletar Tudo"):
+            if st.button("🗑️ Deletar Tudo (Local)"):
                 conn = conectar_banco()
                 conn.execute("DELETE FROM notas_fiscais")
                 conn.commit()
                 conn.close()
-                st.warning("Base limpa!")
+                st.warning("Base Local limpa! (Google Sheets permanece intacto)")
                 time.sleep(1)
                 st.rerun()
         with c2:
