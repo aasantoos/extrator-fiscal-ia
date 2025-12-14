@@ -7,3 +7,5 @@ pypdf2
 plotly
 openpyxl
 streamlit-option-menu
+gspread
+oauth2client
