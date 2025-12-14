@@ -31,27 +31,27 @@ st.markdown("""
     /* Menu Lateral */
     .css-1d391kg { background-color: #262730; }
     
-    /* === NOVO: ESTILO DO LOGIN === */
+    /* === ESTILO DO LOGIN === */
     
     /* 1. Esconder a frase "Press Enter to submit form" */
     [data-testid="InputInstructions"] {
         display: none !important;
     }
     
-    /* 2. Retângulo (Borda) em volta dos campos de digitação (User/Senha) */
+    /* 2. Retângulo (Borda) em volta dos campos de digitação */
     div[data-baseweb="input"] > div {
         border: 1px solid #555 !important;
         border-radius: 8px !important;
         background-color: #1E1E24 !important;
     }
     
-    /* 3. Caixa do Formulário de Login (Mais destacada) */
+    /* 3. Caixa do Formulário de Login (Mais destacada e Larga) */
     div[data-testid="stForm"] {
         background-color: #262730;
         padding: 40px;
         border-radius: 15px;
         border: 1px solid #444;
-        box-shadow: 0px 0px 30px rgba(0,0,0,0.7); /* Sombra mais forte */
+        box-shadow: 0px 0px 30px rgba(0,0,0,0.7);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -77,8 +77,9 @@ def verificar_login():
         st.session_state['usuario_atual'] = None
 
     if not st.session_state['logado']:
-        # LAYOUT DA TELA DE LOGIN
-        col1, col2, col3 = st.columns([1, 1, 1])
+        # LAYOUT DA TELA DE LOGIN (AJUSTADO PARA SER MAIS LARGO)
+        # Mudamos de [1,1,1] para [1,2,1] para dar mais espaço ao texto
+        col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("<br><br>", unsafe_allow_html=True)
             st.markdown("<h1 style='text-align: center; color: #FF4B4B;'>🔒 Opertix</h1>", unsafe_allow_html=True)
@@ -86,8 +87,10 @@ def verificar_login():
             
             with st.form("login_form"):
                 st.markdown("**Credenciais de Acesso**")
+                # Placeholder corrigido e caixa mais larga para não cortar
                 user = st.text_input("Usuário", placeholder="Digite seu usuário")
                 pwd = st.text_input("Senha", type="password", placeholder="Digite sua senha")
+                
                 st.markdown("<br>", unsafe_allow_html=True)
                 submit = st.form_submit_button("Acessar Sistema", type="primary", use_container_width=True)
                 
@@ -105,7 +108,7 @@ def verificar_login():
 
 # --- 3. BLOQUEIO DE SEGURANÇA ---
 if not verificar_login():
-    st.stop() # Para a execução aqui se não estiver logado
+    st.stop() 
 
 # =========================================================
 # ÁREA RESTRITA (SISTEMA CARREGA AQUI)
@@ -174,7 +177,7 @@ def carregar_historico():
 
 inicializar_banco()
 
-# --- 5. AGENTES DE IA (PROMPTS BLINDADOS) ---
+# --- 5. AGENTES DE IA ---
 def ler_pdf(uploaded_file):
     try:
         pdf_reader = PdfReader(uploaded_file)
