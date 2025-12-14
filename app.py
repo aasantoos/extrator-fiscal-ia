@@ -9,48 +9,39 @@ from datetime import datetime
 import plotly.express as px
 from crewai import Agent, Task, Crew
 from PyPDF2 import PdfReader
-from streamlit_option_menu import option_menu # <--- NOVIDADE VISUAL
+from streamlit_option_menu import option_menu
 
-# --- 1. CONFIGURAÇÕES VISUAIS (FRONT-END) ---
+# --- 1. CONFIGURAÇÕES INICIAIS ---
 st.set_page_config(page_title="Opertix System", page_icon="🚀", layout="wide")
 
-# CSS PERSONALIZADO (A MÁGICA DO DESIGN)
+# CSS PERSONALIZADO (VISUAL DARK & LOGIN)
 st.markdown("""
 <style>
-    /* Fundo geral mais escuro e moderno */
-    .stApp {
-        background-color: #0E1117;
-    }
+    .stApp { background-color: #0E1117; }
     
-    /* Cartões de Métricas (KPIs) */
+    /* Cards de KPI */
     .kpi-card {
-        background-color: #262730;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.5);
-        text-align: center;
+        background-color: #262730; padding: 20px; border-radius: 10px;
+        box-shadow: 2px 2px 10px rgba(0,0,0,0.5); text-align: center;
         border-left: 5px solid #FF4B4B;
     }
-    .kpi-value {
-        font-size: 32px;
-        font-weight: bold;
-        color: #FFFFFF;
-        margin: 0;
-    }
-    .kpi-label {
-        font-size: 14px;
-        color: #A0A0A0;
-        margin-top: 5px;
-    }
+    .kpi-value { font-size: 32px; font-weight: bold; color: #FFFFFF; margin: 0; }
+    .kpi-label { font-size: 14px; color: #A0A0A0; margin-top: 5px; }
     
-    /* Ajuste do Menu Lateral */
-    .css-1d391kg {
+    /* Menu Lateral */
+    .css-1d391kg { background-color: #262730; }
+    
+    /* Estilo do Formulário de Login */
+    div[data-testid="stForm"] {
         background-color: #262730;
+        padding: 30px;
+        border-radius: 15px;
+        border: 1px solid #444;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Config API Key
+# Configuração API Key
 if "OPENAI_API_KEY" in st.secrets:
     os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 else:
@@ -58,7 +49,53 @@ else:
 
 MODELO_LLM = "gpt-4o-mini"
 
-# --- 2. FUNÇÕES DE BANCO E IA (MANTIDAS DO ORIGINAL) ---
+# --- 2. SISTEMA DE LOGIN ---
+USUARIOS = {
+    "admin": "admin123",
+    "cliente": "12345"
+}
+
+def verificar_login():
+    """Gerencia a sessão de login e bloqueia acesso não autorizado"""
+    if 'logado' not in st.session_state:
+        st.session_state['logado'] = False
+        st.session_state['usuario_atual'] = None
+
+    if not st.session_state['logado']:
+        # LAYOUT DA TELA DE LOGIN
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            st.markdown("<h1 style='text-align: center; color: #FF4B4B;'>🔒 Opertix</h1>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: gray;'>Sistema de Inteligência Fiscal</p>", unsafe_allow_html=True)
+            
+            with st.form("login_form"):
+                user = st.text_input("Usuário")
+                pwd = st.text_input("Senha", type="password")
+                st.markdown("<br>", unsafe_allow_html=True)
+                submit = st.form_submit_button("Acessar Sistema", type="primary", use_container_width=True)
+                
+                if submit:
+                    if user in USUARIOS and USUARIOS[user] == pwd:
+                        st.session_state['logado'] = True
+                        st.session_state['usuario_atual'] = user
+                        st.toast("Login realizado com sucesso!", icon="✅")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("Usuário ou senha incorretos.")
+        return False
+    return True
+
+# --- 3. BLOQUEIO DE SEGURANÇA ---
+if not verificar_login():
+    st.stop() # Para a execução aqui se não estiver logado
+
+# =========================================================
+# ÁREA RESTRITA (SISTEMA CARREGA AQUI)
+# =========================================================
+
+# --- 4. FUNÇÕES DE BANCO DE DADOS ---
 def conectar_banco():
     return sqlite3.connect("dados_fiscais.db")
 
@@ -96,12 +133,15 @@ def salvar_no_banco(df_novo):
     if df_novo.empty: return
     conn = conectar_banco()
     df_novo['data_upload'] = datetime.now()
+    
     colunas_banco = ['arquivo_origem', 'numero_nota', 'data_emissao', 'emissor_nome', 'emissor_cnpj', 
                      'tomador_nome', 'tomador_cnpj', 'descricao_item', 'codigo_ncm', 'valor_bruto', 
                      'valor_liquido', 'valor_icms', 'valor_ipi', 'valor_icms_st', 'valor_issqn', 
                      'retencao_issqn', 'valor_desconto', 'data_upload']
+    
     for col in colunas_banco:
         if col not in df_novo.columns: df_novo[col] = None
+        
     df_novo['json_completo'] = df_novo.apply(lambda x: x.to_json(), axis=1)
     colunas_finais = colunas_banco + ['json_completo']
     df_novo[colunas_finais].to_sql('notas_fiscais', conn, if_exists='append', index=False)
@@ -118,16 +158,7 @@ def carregar_historico():
 
 inicializar_banco()
 
-# --- FUNÇÕES AUXILIARES DE DESIGN ---
-def card_metric_html(label, value, prefix="R$"):
-    """Cria um cartão HTML bonito para métricas"""
-    return f"""
-    <div class="kpi-card">
-        <div class="kpi-value">{prefix} {value:,.2f}</div>
-        <div class="kpi-label">{label}</div>
-    </div>
-    """
-
+# --- 5. AGENTES DE IA (PROMPTS BLINDADOS RESTAURADOS) ---
 def ler_pdf(uploaded_file):
     try:
         pdf_reader = PdfReader(uploaded_file)
@@ -137,20 +168,42 @@ def ler_pdf(uploaded_file):
     except: return ""
 
 def criar_equipe_extracao():
-    extrator = Agent(role='Auditor', goal='Extrair dados.', backstory='Auditor Fiscal.', verbose=False, llm=MODELO_LLM)
-    auditor = Agent(role='Engenheiro', goal='JSON puro.', backstory='Engenheiro de dados.', verbose=False, llm=MODELO_LLM)
+    extrator = Agent(
+        role='Auditor Tributário Sênior',
+        goal='Extrair dados com fidelidade absoluta, distinguindo Comércio (ICMS) e Serviço (ISS).',
+        backstory='Especialista em legislação fiscal. Você não inventa dados. Se não achar, deixa vazio.',
+        verbose=False, allow_delegation=False, llm=MODELO_LLM
+    )
+    auditor = Agent(
+        role='Engenheiro de Dados',
+        goal='Padronizar JSON e sanitizar dados.',
+        backstory='Garante datas em DD/MM/AAAA, floats corretos e campos vazios zerados.',
+        verbose=False, allow_delegation=False, llm=MODELO_LLM
+    )
     return extrator, auditor
 
 def analisar_dados_com_ia(df_historico):
-    analista = Agent(role='CFO', goal='Análise financeira.', backstory='CFO experiente.', verbose=True, llm=MODELO_LLM)
-    task = Task(description=f"Analise: {df_historico.head(20).to_string()}", expected_output="Relatório MD", agent=analista)
+    analista = Agent(
+        role='CFO Virtual',
+        goal='Analisar o histórico financeiro acumulado.',
+        backstory='Analisa tendências de longo prazo e carga tributária.',
+        verbose=True, allow_delegation=False, llm=MODELO_LLM
+    )
+    task = Task(description=f"Analise: {df_historico.head(50).to_string()}", expected_output="Relatório Executivo Markdown", agent=analista)
     return Crew(agents=[analista], tasks=[task]).kickoff()
 
-# --- 3. MENU LATERAL PROFISSIONAL ---
+def card_metric_html(label, value, prefix="R$"):
+    return f"""
+    <div class="kpi-card">
+        <div class="kpi-value">{prefix} {value:,.2f}</div>
+        <div class="kpi-label">{label}</div>
+    </div>
+    """
+
+# --- 6. MENU LATERAL E NAVEGAÇÃO ---
 with st.sidebar:
-    # Logo ou Título estilizado
     st.markdown("<h1 style='text-align: center; color: #FF4B4B;'>OPERTIX</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: gray;'>Sistema de Inteligência Fiscal</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: gray;'>Usuário: <b>{st.session_state['usuario_atual']}</b></p>", unsafe_allow_html=True)
     st.divider()
     
     selected = option_menu(
@@ -168,11 +221,14 @@ with st.sidebar:
     )
     
     st.divider()
-    st.info("Status: Online 🟢")
+    if st.button("🚪 Sair do Sistema"):
+        st.session_state['logado'] = False
+        st.session_state['usuario_atual'] = None
+        st.rerun()
 
-# --- 4. CONTEÚDO DAS PÁGINAS ---
+# --- 7. PÁGINAS DO SISTEMA ---
 
-# === PÁGINA 1: NOVA AUDITORIA (UPLOAD) ===
+# === NOVA AUDITORIA ===
 if selected == "Nova Auditoria":
     st.title("🚀 Nova Auditoria")
     st.markdown("Arraste suas notas fiscais (PDF) para processamento imediato.")
@@ -192,9 +248,44 @@ if selected == "Nova Auditoria":
                 texto = ler_pdf(arquivo)
                 extrator, auditor = criar_equipe_extracao()
                 
-                # Tarefas (Simplificadas para o exemplo visual, use seu prompt blindado aqui)
-                t1 = Task(description=f"Extraia do texto: {texto}. Identifique se é ICMS ou ISS. Extraia valores, datas, emissor, tomador.", expected_output="Dados", agent=extrator)
-                t2 = Task(description="JSON válido: {numero_nota, emissor_nome, valor_bruto, valor_liquido, valor_icms, valor_issqn, valor_desconto}", expected_output="JSON", agent=auditor)
+                # === PROMPT BLINDADO RESTAURADO ===
+                t1 = Task(
+                    description=f"""
+                    Analise o texto da nota:
+                    ---
+                    {texto}
+                    ---
+                    REGRAS DE OURO:
+                    1. NÃO ALUCINE. Se não achar, retorne "N/A" ou 0.0.
+                    2. DATAS: Converta SEMPRE para DD/MM/AAAA.
+                    3. VALORES: Ignore 'R$'. Use ponto para decimais.
+                    
+                    IDENTIFIQUE E EXTRAIA:
+                    A) TIPO: DANFE (Foco ICMS/IPI) ou NFS-e (Foco ISSQN).
+                    B) ENTIDADES: Emissor (Prestador) e Tomador (Cliente). NÃO INVERTA.
+                    C) DETALHES: Número, Data, Descrição, NCM.
+                    D) FINANCEIRO: Valor Bruto, DESCONTO, Valor Líquido.
+                    E) IMPOSTOS: ICMS, IPI, ICMS-ST, ISSQN, Retenção ISS.
+                    """,
+                    expected_output="Lista estruturada.", agent=extrator
+                )
+                
+                t2 = Task(
+                    description="""
+                    Gere APENAS um JSON válido.
+                    Estrutura Obrigatória (use 0.0 se vazio):
+                    {
+                        "numero_nota": "string", "data_emissao": "string", 
+                        "emissor_nome": "string", "emissor_cnpj": "string", 
+                        "tomador_nome": "string", "tomador_cnpj": "string", 
+                        "descricao_item": "string", "codigo_ncm": "string", 
+                        "valor_bruto": float, "valor_desconto": float, "valor_liquido": float, 
+                        "valor_icms": float, "valor_ipi": float, "valor_icms_st": float,
+                        "valor_issqn": float, "retencao_issqn": float
+                    }
+                    """,
+                    expected_output="JSON válido.", agent=auditor
+                )
                 
                 try:
                     res = Crew(agents=[extrator, auditor], tasks=[t1, t2]).kickoff()
@@ -208,8 +299,8 @@ if selected == "Nova Auditoria":
             
             if resultados:
                 df = pd.DataFrame(resultados)
-                # Tratamento numérico simples
-                for c in ['valor_bruto', 'valor_icms', 'valor_issqn', 'valor_desconto']:
+                cols_num = ['valor_bruto', 'valor_liquido', 'valor_icms', 'valor_issqn', 'valor_ipi', 'valor_desconto']
+                for c in cols_num:
                     if c not in df.columns: df[c] = 0.0
                     df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
                 
@@ -217,19 +308,21 @@ if selected == "Nova Auditoria":
                 status_text.success("✅ Processamento concluído! Vá para a aba Dashboard.")
                 time.sleep(1)
 
-# === PÁGINA 2: DASHBOARD BI (VISUAL) ===
+# === DASHBOARD BI ===
 elif selected == "Dashboard BI":
     st.title("📊 Painel de Inteligência")
     df = carregar_historico()
     
     if df.empty:
-        st.warning("Nenhum dado encontrado. Faça uma auditoria primeiro.")
+        st.warning("Nenhum dado encontrado.")
     else:
-        # 1. Cartões de KPI (HTML/CSS Customizado)
+        # Filtro Visual (Remove JSON)
+        cols_drop = ['json_completo', 'id']
+        df_visual = df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore')
+
         st.markdown("### Indicadores Chave")
         c1, c2, c3, c4 = st.columns(4)
         
-        # Tratamento de Nulos
         for col in ['valor_bruto', 'valor_icms', 'valor_issqn', 'valor_liquido']:
             if col not in df.columns: df[col] = 0.0
             df[col] = df[col].fillna(0.0)
@@ -240,17 +333,15 @@ elif selected == "Dashboard BI":
         with c4: st.markdown(card_metric_html("Total Líquido", df['valor_liquido'].sum()), unsafe_allow_html=True)
         
         st.markdown("---")
-        
-        # 2. Gráficos Modernos
         c_left, c_right = st.columns(2)
         
         with c_left:
             st.markdown("#### 🏆 Top Fornecedores")
-            # Agrupa por emissor e soma valor bruto
-            df_chart = df.groupby('emissor_nome')['valor_bruto'].sum().reset_index().sort_values('valor_bruto', ascending=False).head(5)
-            fig = px.bar(df_chart, x='valor_bruto', y='emissor_nome', orientation='h', text_auto=True, color='valor_bruto', color_continuous_scale='Reds')
-            fig.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='white'))
-            st.plotly_chart(fig, use_container_width=True)
+            if 'emissor_nome' in df.columns:
+                df_chart = df.groupby('emissor_nome')['valor_bruto'].sum().reset_index().sort_values('valor_bruto', ascending=False).head(5)
+                fig = px.bar(df_chart, x='valor_bruto', y='emissor_nome', orientation='h', text_auto=True, color='valor_bruto', color_continuous_scale='Reds')
+                fig.update_layout(showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='white'))
+                st.plotly_chart(fig, use_container_width=True)
             
         with c_right:
             st.markdown("#### ⚖️ Produtos vs Serviços")
@@ -261,7 +352,6 @@ elif selected == "Dashboard BI":
             fig2.update_layout(paper_bgcolor='rgba(0,0,0,0)', font=dict(color='white'))
             st.plotly_chart(fig2, use_container_width=True)
 
-        # 3. Análise CFO
         st.markdown("---")
         if st.button("🤖 Gerar Análise Executiva do CFO"):
             with st.spinner("O CFO Virtual está analisando os números..."):
@@ -269,19 +359,17 @@ elif selected == "Dashboard BI":
                 st.info("Relatório de Inteligência:")
                 st.markdown(analise)
 
-# === PÁGINA 3: BANCO DE DADOS (DADOS BRUTOS) ===
+# === BANCO DE DADOS ===
 elif selected == "Banco de Dados":
     st.title("📂 Base de Dados Detalhada")
     df = carregar_historico()
     
     if not df.empty:
-        # Remover colunas técnicas
         cols_drop = ['json_completo', 'id']
-        df_show = df.drop(columns=[c for c in cols_drop if c in df.columns])
+        df_show = df.drop(columns=[c for c in cols_drop if c in df.columns], errors='ignore')
         
         st.dataframe(df_show, use_container_width=True, height=500)
         
-        # Botões de Ação
         c1, c2 = st.columns([1, 4])
         with c1:
             if st.button("🗑️ Deletar Tudo"):
