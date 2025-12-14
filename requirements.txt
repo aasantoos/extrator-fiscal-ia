@@ -6,3 +6,4 @@ langchain-openai
 pypdf2
 plotly
 openpyxl
+streamlit-option-menu
